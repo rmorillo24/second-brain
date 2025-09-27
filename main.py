@@ -7,6 +7,7 @@ import yaml
 import re
 import os
 import time
+import tempfile
 
 HOME = Path.home() / 'second-brain'
 
@@ -207,6 +208,7 @@ def list_notes(category: str | None = None) -> None:
         ('summarize', 'Summarize the note'),
         ('delete', 'Delete the note'),
         ('format', 'Format the note'),
+        ('process', 'Process with custom prompt'),
         ('cancel', 'Cancel')
     ]
     print("\nAvailable actions:")
@@ -236,6 +238,8 @@ def list_notes(category: str | None = None) -> None:
             delete_note(name)
         elif action == 'format':
             format_note(name)
+        elif action == 'process':
+            process_note(name)
     except ValueError:
         print("ERROR: Invalid input. Please enter a number or 'q'.")
         time.sleep(1)
@@ -464,6 +468,68 @@ def summarize_note(name: str | None) -> None:
         print(f"ERROR: Error updating note with summary: {e}")
         time.sleep(1)
 
+def process_note(name: str | None) -> None:
+    """
+    Process a note with a custom Ollama prompt, open in VIM for review, and save if confirmed.
+    If no name is provided, prompt for category and note selection.
+    """
+    if not name:
+        name = select_note_interactively()
+        if not name:
+            return
+    _, _, file_path = parse_name(name)
+    if not file_path.exists():
+        print(f"ERROR: Note '{name}' not found.")
+        time.sleep(1)
+        return
+    yaml_data, content = extract_yaml_and_content(file_path)
+    if not content:
+        print(f"ERROR: No content found in note '{name}' to process.")
+        time.sleep(1)
+        return
+    custom_prompt = input("Enter the custom prompt for Ollama: ").strip()
+    if not custom_prompt:
+        print("ERROR: Custom prompt cannot be empty.")
+        time.sleep(1)
+        return
+    new_content = call_ollama(custom_prompt, content)
+    if new_content is None:
+        print("Ollama server unavailable: Processing skipped.")
+        time.sleep(1)
+        return
+    # Create temporary file with original YAML and new content
+    temp_content = f"""---
+{yaml.safe_dump(yaml_data, sort_keys=False)}
+---
+{new_content}
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as temp_file:
+        temp_file.write(temp_content)
+        temp_path = temp_file.name
+    try:
+        subprocess.run(['vim', temp_path], check=True)
+        # After VIM, read the edited content
+        edited_content = Path(temp_path).read_text()
+        confirm = input("\nDo you want to save the changes to the original note? (y/n): ").strip().lower()
+        if confirm == 'y':
+            Path(file_path).write_text(edited_content)
+            print(f"Note '{name}' updated successfully.")
+        else:
+            print("Changes not saved.")
+        print("Returning to menu...")
+        time.sleep(1)
+    except FileNotFoundError:
+        print("ERROR: VIM not found. Please install VIM.")
+        time.sleep(1)
+    except subprocess.CalledProcessError:
+        print("ERROR: VIM exited with an error.")
+        time.sleep(1)
+    except Exception as e:
+        print(f"ERROR: {e}")
+        time.sleep(1)
+    finally:
+        os.unlink(temp_path)  # Clean up temporary file
+
 def format_note(name: str | None) -> None:
     """
     Format a note using the Ollama server, preserving YAML metadata.
@@ -516,6 +582,7 @@ def main_interactive() -> None:
         ('search', 'Search notes by keyword'),
         ('summarize', 'Summarize a note'),
         ('format', 'Format a note'),
+        ('process', 'Process a note with custom Ollama prompt'),
         ('exit', 'Exit the program')
     ]
     while True:
@@ -578,6 +645,10 @@ def main_interactive() -> None:
                 clear_screen()
                 print("\n=== Format a Note ===")
                 format_note(None)
+            elif command == 'process':
+                clear_screen()
+                print("\n=== Process a Note with Custom Prompt ===")
+                process_note(None)
         except ValueError:
             print("ERROR: Invalid input. Please enter a number or 'q'.")
             time.sleep(1)
