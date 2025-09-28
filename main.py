@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 from pathlib import Path
 import subprocess
@@ -8,19 +9,65 @@ import re
 import os
 import time
 import tempfile
+import shutil  # For checking git installation
 
 HOME = Path.home() / 'second-brain'
+GIT_ENABLED = os.getenv('BRAIN_GIT_SYNC', 'false').lower() == 'true'  # Enable via: export BRAIN_GIT_SYNC=true
+DEFAULT_BRANCH = os.getenv('BRAIN_GIT_BRANCH', 'master')  # Default to master; override with BRAIN_GIT_BRANCH
+
+def is_git_installed() -> bool:
+    """Check if Git is installed."""
+    return shutil.which('git') is not None
+
+def is_git_repo() -> bool:
+    """Check if HOME is a Git repository."""
+    try:
+        subprocess.run(['git', '-C', str(HOME), 'rev-parse'], check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+def git_pull() -> bool:
+    """Pull changes from the remote repository."""
+    if not GIT_ENABLED or not is_git_installed() or not is_git_repo():
+        return True  # Skip if not enabled or setup
+    try:
+        result = subprocess.run(
+            ['git', '-C', str(HOME), 'pull', 'origin', DEFAULT_BRANCH],
+            check=True, capture_output=True, text=True
+        )
+        if result.stdout:
+            print("Git pull successful.")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Git pull failed: {e.stderr}")
+        return False
+
+def git_push(commit_msg: str) -> bool:
+    """Commit and push changes to the remote repository."""
+    if not GIT_ENABLED or not is_git_installed() or not is_git_repo():
+        return True  # Skip if not enabled or setup
+    try:
+        subprocess.run(['git', '-C', str(HOME), 'add', '.'], check=True)
+        result = subprocess.run(
+            ['git', '-C', str(HOME), 'commit', '-m', commit_msg],
+            check=True, capture_output=True, text=True
+        )
+        subprocess.run(['git', '-C', str(HOME), 'push', 'origin', DEFAULT_BRANCH], check=True)
+        print("Git push successful.")
+        return True
+    except subprocess.CalledProcessError as e:
+        if 'nothing to commit' in str(e.stderr):
+            return True  # No changes is fine
+        print(f"Git push failed: {e.stderr}")
+        return False
 
 def clear_screen() -> None:
-    """
-    Clear the terminal screen.
-    """
+    """Clear the terminal screen."""
     os.system('clear' if os.name != 'nt' else 'cls')
 
 def parse_name(name: str) -> tuple[Path, str, Path]:
-    """
-    Parse the name to determine category path, basename, and file path.
-    """
+    """Parse the name to determine category path, basename, and file path."""
     parts = name.split('/')
     if len(parts) == 1:
         category_path = Path('notes')
@@ -33,10 +80,9 @@ def parse_name(name: str) -> tuple[Path, str, Path]:
     return dir_path, basename, file_path
 
 def select_category_interactively() -> str | None:
-    """
-    Display a list of all categories and let the user select one interactively.
-    Returns the category path (e.g., 'customers') or None for all notes or if cancelled.
-    """
+    """Display a list of all categories and let the user select one interactively."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     categories = set()
     for file in HOME.rglob('*.md'):
         rel_path = file.relative_to(HOME).parent
@@ -71,10 +117,9 @@ def select_category_interactively() -> str | None:
         return None
 
 def select_note_in_category(category: str | None) -> str | None:
-    """
-    Display a list of notes in the specified category (or all notes if None) and let the user select one.
-    Returns the relative note path (e.g., 'notes/example' or 'customers/john-doe') or None if cancelled.
-    """
+    """Display a list of notes in the specified category and let the user select one."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     notes = []
     if category:
         dir_path = HOME / category
@@ -114,19 +159,16 @@ def select_note_in_category(category: str | None) -> str | None:
         return None
 
 def select_note_interactively() -> str | None:
-    """
-    Select a category interactively, then select a note within that category.
-    Returns the relative note path (e.g., 'notes/example' or 'customers/john-doe') or None if cancelled.
-    """
+    """Select a category interactively, then select a note within that category."""
     category = select_category_interactively()
     if category is None and category != '':
-        return None  # Cancelled or all notes selected
+        return None
     return select_note_in_category(category)
 
 def add_note(name: str) -> None:
-    """
-    Create a new Markdown note with YAML metadata and open in VIM.
-    """
+    """Create a new Markdown note with YAML metadata and open in VIM."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     dir_path, basename, file_path = parse_name(name)
     if file_path.exists():
         print(f"ERROR: Note '{name}' already exists.")
@@ -143,6 +185,10 @@ date: {today}
 """
     try:
         file_path.write_text(content)
+        # Create .gitignore if not exists
+        gitignore_path = HOME / '.gitignore'
+        if GIT_ENABLED and not gitignore_path.exists():
+            gitignore_path.write_text('*.swp\n*.swo\n')  # Ignore Vim temp files
     except OSError as e:
         print(f"ERROR: Error creating note: {e}")
         time.sleep(1)
@@ -150,6 +196,7 @@ date: {today}
     try:
         subprocess.run(['vim', str(file_path)], check=True)
         print(f"Note '{name}' added successfully.")
+        git_push(f"Add note: {name}")
         print("Returning to menu...")
         time.sleep(1)
     except FileNotFoundError:
@@ -163,9 +210,9 @@ date: {today}
         time.sleep(1)
 
 def edit_note(name: str | None) -> None:
-    """
-    Open an existing note in VIM for editing. If no name is provided, prompt for category and note selection.
-    """
+    """Open an existing note in VIM for editing."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     if not name:
         name = select_note_interactively()
         if not name:
@@ -178,6 +225,7 @@ def edit_note(name: str | None) -> None:
     try:
         subprocess.run(['vim', str(file_path)], check=True)
         print(f"Note '{name}' edited successfully.")
+        git_push(f"Edit note: {name}")
         print("Returning to menu...")
         time.sleep(1)
     except FileNotFoundError:
@@ -191,14 +239,13 @@ def edit_note(name: str | None) -> None:
         time.sleep(1)
 
 def list_notes(category: str | None = None) -> None:
-    """
-    List notes in a specific category or all notes, then allow the user to select a note and choose an action.
-    If category is None, prompt for interactive category selection.
-    """
+    """List notes in a specific category or all notes, then allow action selection."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     if category is None:
         category = select_category_interactively()
         if category is None and category != '':
-            return  # Cancelled or all notes selected
+            return
     name = select_note_in_category(category)
     if not name:
         return
@@ -248,9 +295,9 @@ def list_notes(category: str | None = None) -> None:
         time.sleep(1)
 
 def delete_note(name: str | None) -> None:
-    """
-    Delete a note after user confirmation. If no name is provided, prompt for category and note selection.
-    """
+    """Delete a note after user confirmation."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     if not name:
         name = select_note_interactively()
         if not name:
@@ -260,11 +307,12 @@ def delete_note(name: str | None) -> None:
         print(f"ERROR: Note '{name}' not found.")
         time.sleep(1)
         return
-    confirm = input(f"Confirm deletion of '{name}'? (y/n): ")
+    confirm = input(f"Confirm deletion of '{name}'? (y/n): ").strip()
     if confirm.lower() == 'y':
         try:
             file_path.unlink()
             print(f"Note '{name}' deleted successfully.")
+            git_push(f"Delete note: {name}")
             print("Returning to menu...")
             time.sleep(1)
         except OSError as e:
@@ -275,9 +323,9 @@ def delete_note(name: str | None) -> None:
         time.sleep(1)
 
 def search_notes(keyword: str) -> None:
-    """
-    Search for a keyword across all notes using grep and display matching notes with previews.
-    """
+    """Search for a keyword across all notes using grep."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     try:
         result = subprocess.run(
             ['grep', '-r', '-i', '--include=*.md', keyword, str(HOME)],
@@ -321,9 +369,7 @@ def search_notes(keyword: str) -> None:
         time.sleep(1)
 
 def extract_yaml_and_content(file_path: Path) -> tuple[dict, str]:
-    """
-    Extract YAML metadata and content from a Markdown file.
-    """
+    """Extract YAML metadata and content from a Markdown file."""
     try:
         content = file_path.read_text()
         yaml_match = re.match(r'^---\n(.*?)\n---\n(.*)', content, re.DOTALL)
@@ -340,9 +386,7 @@ def extract_yaml_and_content(file_path: Path) -> tuple[dict, str]:
         return {}, ""
 
 def call_ollama(prompt: str, content: str) -> str | None:
-    """
-    Call the Ollama server with the given prompt and content using llama3.2:latest.
-    """
+    """Call the Ollama server with the given prompt and content."""
     try:
         response = requests.post(
             'http://localhost:11434/api/generate',
@@ -366,11 +410,9 @@ def call_ollama(prompt: str, content: str) -> str | None:
         return None
 
 def summarize_note(name: str | None) -> None:
-    """
-    Summarize a note using the Ollama server and append summary to YAML metadata.
-    If no name is provided, prompt for category and note selection.
-    Prompt for confirmation before saving the summary.
-    """
+    """Summarize a note using Ollama and append to YAML metadata."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     if not name:
         name = select_note_interactively()
         if not name:
@@ -462,6 +504,7 @@ def summarize_note(name: str | None) -> None:
 """
         file_path.write_text(new_content)
         print(f"Note '{name}' summarized successfully.")
+        git_push(f"Summarize note: {name}")
         print("Returning to menu...")
         time.sleep(1)
     except OSError as e:
@@ -469,10 +512,9 @@ def summarize_note(name: str | None) -> None:
         time.sleep(1)
 
 def process_note(name: str | None) -> None:
-    """
-    Process a note with a custom Ollama prompt, open in VIM for review, and save if confirmed.
-    If no name is provided, prompt for category and note selection.
-    """
+    """Process a note with a custom Ollama prompt, edit in VIM, and save if confirmed."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     if not name:
         name = select_note_interactively()
         if not name:
@@ -497,7 +539,6 @@ def process_note(name: str | None) -> None:
         print("Ollama server unavailable: Processing skipped.")
         time.sleep(1)
         return
-    # Create temporary file with original YAML and new content
     temp_content = f"""---
 {yaml.safe_dump(yaml_data, sort_keys=False)}
 ---
@@ -508,12 +549,12 @@ def process_note(name: str | None) -> None:
         temp_path = temp_file.name
     try:
         subprocess.run(['vim', temp_path], check=True)
-        # After VIM, read the edited content
         edited_content = Path(temp_path).read_text()
         confirm = input("\nDo you want to save the changes to the original note? (y/n): ").strip().lower()
         if confirm == 'y':
             Path(file_path).write_text(edited_content)
             print(f"Note '{name}' updated successfully.")
+            git_push(f"Process note: {name}")
         else:
             print("Changes not saved.")
         print("Returning to menu...")
@@ -528,13 +569,12 @@ def process_note(name: str | None) -> None:
         print(f"ERROR: {e}")
         time.sleep(1)
     finally:
-        os.unlink(temp_path)  # Clean up temporary file
+        os.unlink(temp_path)
 
 def format_note(name: str | None) -> None:
-    """
-    Format a note using the Ollama server, preserving YAML metadata.
-    If no name is provided, prompt for category and note selection.
-    """
+    """Format a note using Ollama, preserving YAML metadata."""
+    if not git_pull():
+        print("Proceeding without latest changes due to pull failure.")
     if not name:
         name = select_note_interactively()
         if not name:
@@ -563,6 +603,7 @@ def format_note(name: str | None) -> None:
 """
         file_path.write_text(new_content)
         print(f"Note '{name}' formatted successfully.")
+        git_push(f"Format note: {name}")
         print("Returning to menu...")
         time.sleep(1)
     except OSError as e:
@@ -570,10 +611,14 @@ def format_note(name: str | None) -> None:
         time.sleep(1)
 
 def main_interactive() -> None:
-    """
-    Main entry point for the interactive brain CLI app.
-    Displays a menu of commands and handles user input.
-    """
+    """Main entry point for the interactive brain CLI app."""
+    if GIT_ENABLED and not is_git_installed():
+        print("Warning: Git sync enabled but Git not installed. Install Git for sync.")
+        time.sleep(1)
+    if GIT_ENABLED and not is_git_repo():
+        print("Warning: Git sync enabled but no Git repo found in ~/second-brain. Initialize it manually.")
+        time.sleep(1)
+    
     commands = [
         ('add', 'Add a new note'),
         ('edit', 'Edit an existing note'),
