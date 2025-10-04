@@ -224,6 +224,14 @@ def edit_note(name: str | None) -> None:
         return
     try:
         subprocess.run(['vim', str(file_path)], check=True)
+        # Update the date field after editing
+        yaml_data, content = extract_yaml_and_content(file_path)
+        yaml_data = update_note_date(yaml_data)
+        new_content = f"""---
+{yaml.safe_dump(yaml_data, sort_keys=False)}---
+{content}
+"""
+        file_path.write_text(new_content)
         print(f"Note '{name}' edited successfully.")
         git_push(f"Edit note: {name}")
         print("Returning to menu...")
@@ -385,6 +393,11 @@ def extract_yaml_and_content(file_path: Path) -> tuple[dict, str]:
         time.sleep(1)
         return {}, ""
 
+def update_note_date(yaml_data: dict) -> dict:
+    """Update the date field in YAML metadata to today's date."""
+    yaml_data['date'] = date.today().isoformat()
+    return yaml_data
+
 def call_ollama(prompt: str, content: str) -> str | None:
     """Call the Ollama server with the given prompt and content."""
     try:
@@ -496,10 +509,10 @@ def summarize_note(name: str | None) -> None:
             return
 
     yaml_data['summary'] = summary
+    yaml_data = update_note_date(yaml_data)
     try:
         new_content = f"""---
-{yaml.safe_dump(yaml_data, sort_keys=False)}
----
+{yaml.safe_dump(yaml_data, sort_keys=False)}---
 {content}
 """
         file_path.write_text(new_content)
@@ -552,7 +565,14 @@ def process_note(name: str | None) -> None:
         edited_content = Path(temp_path).read_text()
         confirm = input("\nDo you want to save the changes to the original note? (y/n): ").strip().lower()
         if confirm == 'y':
-            Path(file_path).write_text(edited_content)
+            # Extract YAML and content from edited temp file, then update date
+            yaml_data_edited, content_edited = extract_yaml_and_content(Path(temp_path))
+            yaml_data_edited = update_note_date(yaml_data_edited)
+            final_content = f"""---
+{yaml.safe_dump(yaml_data_edited, sort_keys=False)}---
+{content_edited}
+"""
+            Path(file_path).write_text(final_content)
             print(f"Note '{name}' updated successfully.")
             git_push(f"Process note: {name}")
         else:
@@ -595,10 +615,10 @@ def format_note(name: str | None) -> None:
         print("Ollama server unavailable: Formatting skipped.")
         time.sleep(1)
         return
+    yaml_data = update_note_date(yaml_data)
     try:
         new_content = f"""---
-{yaml.safe_dump(yaml_data, sort_keys=False)}
----
+{yaml.safe_dump(yaml_data, sort_keys=False)}---
 {formatted_content}
 """
         file_path.write_text(new_content)
